@@ -1,0 +1,5 @@
+[local_repo]
+name=Rocky Linux $releasever - Localrepo
+baseurl=http://192.168.88.100/localrepo
+enabled=1
+gpgcheck=0

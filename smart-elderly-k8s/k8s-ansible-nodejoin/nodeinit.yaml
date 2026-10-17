@@ -1,0 +1,313 @@
+---
+- name: Initialize Kubernetes worker nodes
+  hosts: nodes
+  become: yes
+  gather_facts: yes
+
+  vars:
+    master: "192.168.88.102:6443"
+    token: "zeg3ku.rryjnn6vraou77xq"
+    token_hash: "sha256:43d1b8f3a1befb205076aeb5e06ede3452686c1b046a1df79a6ae838850202b4"
+
+    # ============================================================
+    # Harbor
+    # ============================================================
+    harbor_ip: "192.168.88.101"
+    harbor_domain: "harbor"
+    harbor_ca_src: "files/harbor-ca.crt"
+    harbor_ca_dest: "/etc/pki/ca-trust/source/anchors/harbor-ca.crt"
+
+  tasks:
+    # ============================================================
+    # 1. 关闭 swap
+    # ============================================================
+
+    - name: Disable swap immediately
+      ansible.builtin.command:
+        cmd: swapoff -a
+
+    - name: Remove swap configuration from fstab
+      ansible.builtin.lineinfile:
+        path: /etc/fstab
+        state: absent
+        regexp: '^\s*[^#].*\s+swap\s+'
+
+    # ============================================================
+    # 2. 卸载 firewalld 禁止 selinux
+    # ============================================================
+
+    - name: Remove firewalld
+      ansible.builtin.dnf:
+        name: firewalld
+        state: absent
+
+    - name: Disable SELinux enforcement immediately
+      ansible.builtin.command:
+        cmd: setenforce 0
+      failed_when: false
+      changed_when: false
+
+    - name: Disable SELinux permanently
+      ansible.builtin.replace:
+        path: /etc/selinux/config
+        regexp: '^SELINUX=.*'
+        replace: 'SELINUX=disabled'
+
+    # ============================================================
+    # 3. 安装 Kubernetes 和 containerd
+    # ============================================================
+    - name: Set localrepo
+      ansible.builtin.copy:
+        src: files/local.repo
+        dest: /etc/yum.repos.d/
+    - name: Install Kubernetes and containerd packages
+      ansible.builtin.dnf:
+        name:
+          - kubeadm
+          - kubelet
+          - kubectl
+          - containerd.io
+          - ipvsadm
+          - ipset
+          - iproute-tc
+          - ca-certificates
+        state: present
+        update_cache: yes
+
+    # ============================================================
+    # 4. 加载内核模块
+    # ============================================================
+
+    - name: Create containerd kernel modules configuration
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/containerd.conf
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          overlay
+          br_netfilter
+          xt_conntrack
+
+    - name: Load kernel modules
+      ansible.builtin.command:
+        cmd: modprobe {{ item }}
+      loop:
+        - overlay
+        - br_netfilter
+        - xt_conntrack
+
+    # ============================================================
+    # 5. 配置 Kubernetes 内核参数
+    # ============================================================
+
+    - name: Create Kubernetes sysctl configuration
+      ansible.builtin.copy:
+        dest: /etc/sysctl.d/99-kubernetes-cri.conf
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          net.ipv4.ip_forward = 1
+          net.bridge.bridge-nf-call-iptables = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+          net.netfilter.nf_conntrack_max = 1000000
+
+    - name: Apply sysctl configuration
+      ansible.builtin.command:
+        cmd: sysctl -p /etc/sysctl.d/99-kubernetes-cri.conf
+
+    # ============================================================
+    # 6. 配置 /etc/hosts
+    # ============================================================
+
+    - name: Configure /etc/hosts
+      ansible.builtin.copy:
+        dest: /etc/hosts
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          127.0.0.1   localhost localhost.localdomain localhost4 localhost.localdomain4
+          ::1         localhost localhost.localdomain localhost6 localhost6.localdomain6
+          
+          # Infrastructure
+          192.168.88.100  repo
+          192.168.88.101  harbor
+          192.168.88.102  master01
+
+          # Kubernetes worker nodes
+          {% for i in groups['nodes'] %}
+          {{ hostvars[i].ansible_default_ipv4.address }}   {{ hostvars[i].ansible_hostname }}
+          {% endfor %}
+
+    # ============================================================
+    # 7. 安装 Harbor CA 证书
+    #
+    # 对应 master01 上：
+    #
+    # scp harbor:/usr/local/harbor/tls/cert.crt \
+    # /etc/pki/ca-trust/source/anchors/harbor-ca.crt
+    #
+    # update-ca-trust
+    # ============================================================
+
+    - name: Create system CA trust directory
+      ansible.builtin.file:
+        path: /etc/pki/ca-trust/source/anchors
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Copy Harbor CA certificate
+      ansible.builtin.copy:
+        src: "{{ harbor_ca_src }}"
+        dest: "{{ harbor_ca_dest }}"
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Update system CA trust
+      ansible.builtin.command:
+        cmd: update-ca-trust
+
+    # ============================================================
+    # 8. 配置 containerd Harbor 证书
+    #
+    # 对应 master01：
+    #
+    # mkdir -p /etc/containerd/certs.d/harbor:443
+    #
+    # cp harbor-ca.crt \
+    # /etc/containerd/certs.d/harbor:443/ca.crt
+    # ============================================================
+
+    - name: Create containerd Harbor certificate directory
+      ansible.builtin.file:
+        path: /etc/containerd/certs.d/harbor:443
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Copy Harbor CA certificate for containerd
+      ansible.builtin.copy:
+        src: "{{ harbor_ca_src }}"
+        dest: /etc/containerd/certs.d/harbor:443/ca.crt
+        owner: root
+        group: root
+        mode: '0644'
+
+    # ============================================================
+    # 9. 创建 containerd hosts.toml
+    #
+    # 对应 master01：
+    #
+    # server = "https://harbor:443"
+    #
+    # [host."https://harbor:443"]
+    # capabilities = ["pull", "resolve", "push"]
+    # ca = "/etc/containerd/certs.d/harbor:443/ca.crt"
+    # ============================================================
+
+    - name: Configure Harbor hosts.toml for containerd
+      ansible.builtin.copy:
+        dest: /etc/containerd/certs.d/harbor:443/hosts.toml
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          server = "https://harbor:443"
+
+          [host."https://harbor:443"]
+          capabilities = ["pull", "resolve", "push"]
+          ca = "/etc/containerd/certs.d/harbor:443/ca.crt"
+
+    # ============================================================
+    # 10. 配置 containerd
+    # ============================================================
+
+    - name: Configure containerd
+      ansible.builtin.template:
+        src: config.j2
+        dest: /etc/containerd/config.toml
+        owner: root
+        group: root
+        mode: '0644'
+
+    # ============================================================
+    # 11. 检查 containerd 配置
+    # ============================================================
+
+    - name: Validate containerd configuration
+      ansible.builtin.shell:
+        cmd: containerd config dump >/dev/null
+      changed_when: false
+
+    # ============================================================
+    # 12. 启动 containerd
+    # ============================================================
+
+    - name: Enable and restart containerd
+      ansible.builtin.systemd:
+        name: containerd
+        enabled: yes
+        state: restarted
+        daemon_reload: yes
+
+    # ============================================================
+    # 13. 启动 kubelet
+    # ============================================================
+
+    - name: Enable kubelet
+      ansible.builtin.systemd:
+        name: kubelet
+        enabled: yes
+        state: started
+
+    # ============================================================
+    # 14. 判断节点是否已经加入集群
+    # ============================================================
+
+    - name: Check kubelet configuration
+      ansible.builtin.stat:
+        path: /etc/kubernetes/kubelet.conf
+      register: kubelet_config
+
+    # ============================================================
+    # 15. 加入 Kubernetes 集群
+    # ============================================================
+
+    - name: Join Kubernetes cluster
+      ansible.builtin.shell:
+        cmd: |
+          kubeadm join {{ master }} \
+            --token {{ token }} \
+            --discovery-token-ca-cert-hash {{ token_hash }}
+      args:
+        executable: /bin/bash
+      when: not kubelet_config.stat.exists
+
+    # ============================================================
+    # 16. 加入集群后重启 kubelet
+    # ============================================================
+
+    - name: Restart kubelet after joining cluster
+      ansible.builtin.systemd:
+        name: kubelet
+        state: restarted
+        enabled: yes
+      when: not kubelet_config.stat.exists
+
+    # ============================================================
+    # 17. 输出节点完成信息
+    # ============================================================
+
+    - name: Node initialization completed
+      ansible.builtin.debug:
+        msg:
+          - "Node {{ inventory_hostname }} initialization completed."
+          - "Harbor CA trust configured."
+          - "containerd Harbor certificate configured."
+          - "Kubernetes join completed."

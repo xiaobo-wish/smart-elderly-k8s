@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: xhzb-redis
+  namespace: xhzb
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: xhzb-redis
+  template:
+    metadata:
+      labels:
+        app: xhzb-redis
+    spec:
+      containers:
+        - name: redis
+          image: harbor:443/xhzb/redis:7.2
+          imagePullPolicy: IfNotPresent
+          args:
+            - --requirepass
+            - $(REDIS_PASSWORD)
+            - --appendonly
+            - "yes"
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: xhzb-secret
+                  key: REDIS_PASSWORD
+          ports:
+            - containerPort: 6379
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: xhzb-redis-pvc
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: xhzb-redis-pvc
+  namespace: xhzb
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: nfs-storage
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: xhzb-redis
+  namespace: xhzb
+spec:
+  selector:
+    app: xhzb-redis
+  ports:
+    - port: 6379
+      targetPort: 6379

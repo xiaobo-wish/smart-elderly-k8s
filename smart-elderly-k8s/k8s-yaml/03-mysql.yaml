@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: xhzb-mysql
+  namespace: xhzb
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: xhzb-mysql
+  template:
+    metadata:
+      labels:
+        app: xhzb-mysql
+    spec:
+      containers:
+        - name: mysql
+          image: harbor:443/xhzb/mysql:8.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - --character-set-server=utf8mb4
+            - --collation-server=utf8mb4_general_ci
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: xhzb-secret
+                  key: MYSQL_ROOT_PASSWORD
+            - name: MYSQL_DATABASE
+              value: xhzb
+            - name: TZ
+              value: Asia/Shanghai
+          ports:
+            - containerPort: 3306
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: xhzb-mysql-pvc
+        - name: init
+          configMap:
+            name: xhzb-sql
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: xhzb-mysql-pvc
+  namespace: xhzb
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: nfs-storage
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: xhzb-mysql
+  namespace: xhzb
+spec:
+  selector:
+    app: xhzb-mysql
+  ports:
+    - port: 3306
+      targetPort: 3306

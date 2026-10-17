@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: xhzb-ui
+  namespace: xhzb
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: xhzb-ui
+  template:
+    metadata:
+      labels:
+        app: xhzb-ui
+    spec:
+      containers:
+        - name: xhzb-ui
+          image: harbor:443/xhzb/xhzb-ui:v1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            tcpSocket:
+              port: 80
+            initialDelaySeconds: 10
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: xhzb-ui
+  namespace: xhzb
+spec:
+  selector:
+    app: xhzb-ui
+  ports:
+    - port: 80
+      targetPort: 80

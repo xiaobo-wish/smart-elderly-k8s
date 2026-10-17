@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: xhzb-minio
+  namespace: xhzb
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: xhzb-minio
+  template:
+    metadata:
+      labels:
+        app: xhzb-minio
+    spec:
+      containers:
+        - name: minio
+          image: harbor:443/xhzb/minio:RELEASE.2025-03-12T18-04-18Z
+          imagePullPolicy: IfNotPresent
+          command:
+            - minio
+            - server
+            - /minio_data
+            - --console-address
+            - ":9001"     # 这是 minio web control 控制台的端口
+          env:
+            - name: MINIO_ACCESS_KEY
+              value: minioadmin
+            - name: MINIO_SECRET_KEY
+              value: minioadmin
+          ports:
+            - containerPort: 9000
+            - containerPort: 9001
+          volumeMounts:
+            - name: data
+              mountPath: /minio_data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: xhzb-minio-pvc
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: xhzb-minio-pvc
+  namespace: xhzb
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: nfs-storage
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: xhzb-minio
+  namespace: xhzb
+spec:
+  selector:
+    app: xhzb-minio
+  ports:
+    - port: 9000
+      targetPort: 9000    # 这是 minio api 访问的端口

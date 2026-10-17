@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: xhzb-etcd
+  namespace: xhzb
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: xhzb-etcd
+  template:
+    metadata:
+      labels:
+        app: xhzb-etcd
+    spec:
+      containers:
+        - name: etcd
+          image: harbor:443/xhzb/etcd:v3.5.14
+          imagePullPolicy: IfNotPresent
+          command:
+            - etcd
+          args:
+            - --advertise-client-urls=http://xhzb-etcd:2379
+            - --listen-client-urls=http://0.0.0.0:2379
+            - --data-dir=/etcd
+            - --auto-compaction-retention=1000
+          ports:
+            - containerPort: 2379
+          volumeMounts:
+            - name: data
+              mountPath: /etcd
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: xhzb-etcd-pvc
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: xhzb-etcd-pvc
+  namespace: xhzb
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: nfs-storage
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: xhzb-etcd
+  namespace: xhzb
+spec:
+  selector:
+    app: xhzb-etcd
+  ports:
+    - port: 2379
+      targetPort: 2379

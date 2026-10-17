@@ -1,0 +1,116 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: xhzb-admin
+  namespace: xhzb
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: xhzb-admin
+  template:
+    metadata:
+      labels:
+        app: xhzb-admin
+    spec:
+      containers:
+        - name: xhzb-admin
+          image: harbor:443/xhzb/xhzb-admin:v1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 9000
+          env:
+            - name: SPRING_PROFILES_ACTIVE
+              value: prod
+            # point DB/Redis to in-cluster Service names
+            - name: SPRING_DATASOURCE_URL
+              value: "jdbc:mysql://xhzb-mysql:3306/xhzb?useUnicode=true&characterEncoding=utf8&zeroDa=convertToNull&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=GMT%2B8"
+            - name: SPRING_DATASOURCE_USERNAME
+              value: root
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: xhzb-secret
+                  key: MYSQL_ROOT_PASSWORD
+            - name: SPRING_DATA_REDIS_HOST
+              value: xhzb-redis
+            - name: SPRING_DATA_REDIS_PORT
+              value: "6379"
+            - name: SPRING_DATA_REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: xhzb-secret
+                  key: REDIS_PASSWORD
+            # external service credentials
+            - name: OSS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: xhzb-secret
+                  key: OSS_ACCESS_KEY_ID
+            - name: OSS_ACCESS_KEY_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: xhzb-secret
+                  key: OSS_ACCESS_KEY_SECRET
+            # OSS bucket/endpoint: 环境变量覆盖 yml 硬编码（hm-xhzb / oss-cn-beijing），换人部署改这里
+            - name: OSS_BUCKET_NAME
+              value: lockydog        # 这两处、改成自己的阿里云对象存储的名称和可用区域
+            - name: OSS_ENDPOINT
+              value: oss-cn-beijing.aliyuncs.com
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: xhzb-secret
+                  key: OPENAI_API_KEY
+            - name: DEEPSEEK_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: xhzb-secret
+                  key: DEEPSEEK_API_KEY
+            - name: MILVUS_HOST
+              value: xhzb-milvus
+            # override: 该百炼账号无 qwen-max-latest 权限，改用稳定的 qwen-max
+            - name: SPRING_AI_OPENAI_CHAT_OPTIONS_MODEL
+              value: qwen-max
+          readinessProbe:
+            tcpSocket:
+              port: 9000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 9000
+            initialDelaySeconds: 60
+            periodSeconds: 20
+          volumeMounts:
+            # logs + upload dir (same as original compose)
+            - name: appdata
+              mountPath: /home/ruoyi
+      volumes:
+        - name: appdata
+          persistentVolumeClaim:
+            claimName: xhzb-admin-pvc
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: xhzb-admin-pvc
+  namespace: xhzb
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: nfs-storage
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: xhzb-admin
+  namespace: xhzb
+spec:
+  selector:
+    app: xhzb-admin
+  ports:
+    - port: 9000
